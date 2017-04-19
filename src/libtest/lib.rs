@@ -922,7 +922,7 @@ fn use_color(opts: &TestOpts) -> bool {
     }
 }
 
-#[cfg(target_os = "redox")]
+#[cfg(any(target_os = "redox", target_os = "pulsar"))]
 fn stdout_isatty() -> bool {
     // FIXME: Implement isatty on Redox
     false
@@ -1116,7 +1116,7 @@ fn get_concurrency() -> usize {
         }
     }
 
-    #[cfg(target_os = "redox")]
+    #[cfg(any(target_os = "redox", target_os = "pulsar"))]
     fn num_cpus() -> usize {
         // FIXME: Implement num_cpus on Redox
         1

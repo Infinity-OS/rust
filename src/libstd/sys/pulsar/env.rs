@@ -9,8 +9,8 @@
 // except according to those terms.
 
 pub mod os {
-    pub const FAMILY: &'static str = "redox";
-    pub const OS: &'static str = "redox";
+    pub const FAMILY: &'static str = "pulsar";
+    pub const OS: &'static str = "pulsar";
     pub const DLL_PREFIX: &'static str = "lib";
     pub const DLL_SUFFIX: &'static str = ".so";
     pub const DLL_EXTENSION: &'static str = "so";

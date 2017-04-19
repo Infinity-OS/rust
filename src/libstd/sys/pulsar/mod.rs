@@ -89,7 +89,7 @@ pub fn cvt(result: Result<usize, syscall::Error>) -> io::Result<usize> {
     result.map_err(|err| io::Error::from_raw_os_error(err.errno))
 }
 
-/// On Redox, use an illegal instruction to abort
+/// On Pulsar, use an illegal instruction to abort
 pub unsafe fn abort_internal() -> ! {
     ::core::intrinsics::abort();
 }

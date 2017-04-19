@@ -28,7 +28,7 @@
 #![panic_runtime]
 #![feature(panic_runtime)]
 #![cfg_attr(unix, feature(libc))]
-#![cfg_attr(any(target_os = "redox", windows), feature(core_intrinsics))]
+#![cfg_attr(any(target_os = "redox", windows, target_os = "pulsar"), feature(core_intrinsics))]
 
 // Rust's "try" function, but if we're aborting on panics we just call the
 // function as there's nothing else we need to do here.
@@ -61,7 +61,7 @@ pub unsafe extern fn __rust_start_panic(_data: usize, _vtable: usize) -> u32 {
         libc::abort();
     }
 
-    #[cfg(any(target_os = "redox", windows))]
+    #[cfg(any(target_os = "redox", target_os = "pulsar", windows))]
     unsafe fn abort() -> ! {
         core::intrinsics::abort();
     }

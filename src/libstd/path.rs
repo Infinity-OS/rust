@@ -1544,7 +1544,7 @@ impl Path {
     #[allow(deprecated)]
     pub fn is_absolute(&self) -> bool {
         // FIXME: Remove target_os = "redox" and allow Redox prefixes
-        self.has_root() && (cfg!(unix) || cfg!(target_os = "redox") || self.prefix().is_some())
+        self.has_root() && (cfg!(unix) || cfg!(target_os = "redox") || cfg!(target_os = "pulsar") || self.prefix().is_some())
     }
 
     /// A path is *relative* if it is not absolute.

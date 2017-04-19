@@ -45,3 +45,7 @@ mod imp;
 #[cfg(target_os = "redox")]
 #[path = "redox/mod.rs"]
 mod imp;
+
+#[cfg(target_os = "pulsar")]
+#[path = "pulsar/mod.rs"]
+mod imp;
