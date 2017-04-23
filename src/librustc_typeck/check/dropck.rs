@@ -82,7 +82,7 @@ fn ensure_drop_params_and_item_params_correspond<'a, 'tcx>(
     // check that the impl type can be made to match the trait type.
 
     let impl_param_env = ty::ParameterEnvironment::for_item(tcx, self_type_node_id);
-    tcx.infer_ctxt(impl_param_env, Reveal::UserFacing).enter(|infcx| {
+    tcx.infer_ctxt(impl_param_env, Reveal::UserFacing).enter(|ref infcx| {
         let tcx = infcx.tcx;
         let mut fulfillment_cx = traits::FulfillmentContext::new();
 
@@ -97,8 +97,7 @@ fn ensure_drop_params_and_item_params_correspond<'a, 'tcx>(
         let cause = &ObligationCause::misc(drop_impl_span, drop_impl_node_id);
         match infcx.eq_types(true, cause, named_type, fresh_impl_self_ty) {
             Ok(InferOk { obligations, .. }) => {
-                // FIXME(#32730) propagate obligations
-                assert!(obligations.is_empty());
+                fulfillment_cx.register_predicate_obligations(infcx, obligations);
             }
             Err(_) => {
                 let item_span = tcx.hir.span(self_type_node_id);
@@ -627,7 +626,7 @@ fn revise_self_ty<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
             let impl_self_orig = self_substs.region_for_def(def);
             let r = if let ty::Region::ReEarlyBound(ref ebr) = *impl_self_orig {
                 if impl_bindings.region_param(ebr).pure_wrt_drop {
-                    tcx.mk_region(ty::ReStatic)
+                    tcx.types.re_static
                 } else {
                     r_orig
                 }

@@ -298,7 +298,7 @@ pub struct IterMut<'a, K: 'a, V: 'a> {
 
 /// An owning iterator over the entries of a `BTreeMap`.
 ///
-/// This `struct` is created by the [`into_iter`] method on [`BTreeMap`]
+/// This `struct` is created by the [`into_iter`] method on [`BTreeMap`][`BTreeMap`]
 /// (provided by the `IntoIterator` trait). See its documentation for more.
 ///
 /// [`into_iter`]: struct.BTreeMap.html#method.into_iter
@@ -1442,6 +1442,7 @@ impl<'a, K, V> Clone for Values<'a, K, V> {
     }
 }
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> Iterator for Range<'a, K, V> {
     type Item = (&'a K, &'a V);
 
@@ -1517,6 +1518,7 @@ impl<'a, K, V> Range<'a, K, V> {
     }
 }
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> DoubleEndedIterator for Range<'a, K, V> {
     fn next_back(&mut self) -> Option<(&'a K, &'a V)> {
         if self.front == self.back {
@@ -1562,6 +1564,7 @@ impl<'a, K, V> Range<'a, K, V> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, K, V> FusedIterator for Range<'a, K, V> {}
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> Clone for Range<'a, K, V> {
     fn clone(&self) -> Range<'a, K, V> {
         Range {
@@ -1571,6 +1574,7 @@ impl<'a, K, V> Clone for Range<'a, K, V> {
     }
 }
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
@@ -1615,6 +1619,7 @@ impl<'a, K, V> RangeMut<'a, K, V> {
     }
 }
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> DoubleEndedIterator for RangeMut<'a, K, V> {
     fn next_back(&mut self) -> Option<(&'a K, &'a mut V)> {
         if self.front == self.back {
@@ -2210,13 +2215,6 @@ impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
     #[stable(feature = "map_entry_keys", since = "1.10.0")]
     pub fn key(&self) -> &K {
         self.handle.reborrow().into_kv().0
-    }
-
-    /// Deprecated, renamed to `remove_entry`
-    #[unstable(feature = "map_entry_recover_keys", issue = "34285")]
-    #[rustc_deprecated(since = "1.12.0", reason = "renamed to `remove_entry`")]
-    pub fn remove_pair(self) -> (K, V) {
-        self.remove_entry()
     }
 
     /// Take ownership of the key and value from the map.

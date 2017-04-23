@@ -1,4 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -10,10 +10,6 @@
 
 fn main() { }
 
-// Before these errors would ICE as "cat_expr Errd" because the errors
-// were unknown when the bug was triggered.
-
 fn unconstrained_type() {
     [];
-    //~^ ERROR cannot determine a type for this expression: unconstrained type
 }

@@ -34,9 +34,9 @@ use ty::walk::TypeWalker;
 use util::nodemap::{NodeSet, DefIdMap, FxHashMap};
 
 use serialize::{self, Encodable, Encoder};
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell, Ref};
 use std::collections::BTreeMap;
+use std::cmp;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
@@ -71,7 +71,6 @@ pub use self::sty::InferTy::*;
 pub use self::sty::Region::*;
 pub use self::sty::TypeVariants::*;
 
-pub use self::contents::TypeContents;
 pub use self::context::{TyCtxt, GlobalArenas, tls};
 pub use self::context::{Lift, TypeckTables};
 
@@ -99,7 +98,6 @@ pub mod walk;
 pub mod wf;
 pub mod util;
 
-mod contents;
 mod context;
 mod flags;
 mod instance;
@@ -116,7 +114,7 @@ mod sty;
 #[derive(Clone)]
 pub struct CrateAnalysis {
     pub access_levels: Rc<AccessLevels>,
-    pub reachable: NodeSet,
+    pub reachable: Rc<NodeSet>,
     pub name: String,
     pub glob_map: Option<hir::GlobMap>,
 }
@@ -425,6 +423,10 @@ bitflags! {
         const IS_SIZED          = 1 << 17,
         const MOVENESS_CACHED   = 1 << 18,
         const MOVES_BY_DEFAULT  = 1 << 19,
+        const FREEZENESS_CACHED = 1 << 20,
+        const IS_FREEZE         = 1 << 21,
+        const NEEDS_DROP_CACHED = 1 << 22,
+        const NEEDS_DROP        = 1 << 23,
     }
 }
 
@@ -1181,6 +1183,9 @@ pub struct ParameterEnvironment<'tcx> {
 
     /// A cache for `type_is_sized`
     pub is_sized_cache: RefCell<FxHashMap<Ty<'tcx>, bool>>,
+
+    /// A cache for `type_is_freeze`
+    pub is_freeze_cache: RefCell<FxHashMap<Ty<'tcx>, bool>>,
 }
 
 impl<'a, 'tcx> ParameterEnvironment<'tcx> {
@@ -1195,6 +1200,7 @@ impl<'a, 'tcx> ParameterEnvironment<'tcx> {
             free_id_outlive: self.free_id_outlive,
             is_copy_cache: RefCell::new(FxHashMap()),
             is_sized_cache: RefCell::new(FxHashMap()),
+            is_freeze_cache: RefCell::new(FxHashMap()),
         }
     }
 
@@ -1464,10 +1470,12 @@ impl_stable_hash_for!(struct ReprFlags {
 #[derive(Copy, Clone, Eq, PartialEq, RustcEncodable, RustcDecodable, Default)]
 pub struct ReprOptions {
     pub int: Option<attr::IntType>,
+    pub align: u16,
     pub flags: ReprFlags,
 }
 
 impl_stable_hash_for!(struct ReprOptions {
+    align,
     int,
     flags
 });
@@ -1476,7 +1484,7 @@ impl ReprOptions {
     pub fn new(tcx: TyCtxt, did: DefId) -> ReprOptions {
         let mut flags = ReprFlags::empty();
         let mut size = None;
-
+        let mut max_align = 0;
         for attr in tcx.get_attrs(did).iter() {
             for r in attr::find_repr_attrs(tcx.sess.diagnostic(), attr) {
                 flags.insert(match r {
@@ -1485,6 +1493,10 @@ impl ReprOptions {
                     attr::ReprSimd => ReprFlags::IS_SIMD,
                     attr::ReprInt(i) => {
                         size = Some(i);
+                        ReprFlags::empty()
+                    },
+                    attr::ReprAlign(align) => {
+                        max_align = cmp::max(align, max_align);
                         ReprFlags::empty()
                     },
                 });
@@ -1500,7 +1512,7 @@ impl ReprOptions {
         if !tcx.consider_optimizing(|| format!("Reorder fields of {:?}", tcx.item_path_str(did))) {
             flags.insert(ReprFlags::IS_LINEAR);
         }
-        ReprOptions { int: size, flags: flags }
+        ReprOptions { int: size, align: max_align, flags: flags }
     }
 
     #[inline]
@@ -2023,6 +2035,23 @@ impl BorrowKind {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum Attributes<'gcx> {
+    Owned(Rc<[ast::Attribute]>),
+    Borrowed(&'gcx [ast::Attribute])
+}
+
+impl<'gcx> ::std::ops::Deref for Attributes<'gcx> {
+    type Target = [ast::Attribute];
+
+    fn deref(&self) -> &[ast::Attribute] {
+        match self {
+            &Attributes::Owned(ref data) => &data,
+            &Attributes::Borrowed(data) => data
+        }
+    }
+}
+
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn body_tables(self, body: hir::BodyId) -> &'gcx TypeckTables<'gcx> {
         self.item_tables(self.hir.body_owner_def_id(body))
@@ -2120,14 +2149,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 
     pub fn trait_impl_polarity(self, id: DefId) -> hir::ImplPolarity {
-        if let Some(id) = self.hir.as_local_node_id(id) {
-            match self.hir.expect_item(id).node {
-                hir::ItemImpl(_, polarity, ..) => polarity,
-                ref item => bug!("trait_impl_polarity: {:?} not an impl", item)
-            }
-        } else {
-            self.sess.cstore.impl_polarity(id)
-        }
+        queries::impl_polarity::get(self, DUMMY_SP, id)
     }
 
     pub fn trait_relevant_for_never(self, did: DefId) -> bool {
@@ -2375,46 +2397,12 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         Some(self.item_mir(did))
     }
 
-    /// If `type_needs_drop` returns true, then `ty` is definitely
-    /// non-copy and *might* have a destructor attached; if it returns
-    /// false, then `ty` definitely has no destructor (i.e. no drop glue).
-    ///
-    /// (Note that this implies that if `ty` has a destructor attached,
-    /// then `type_needs_drop` will definitely return `true` for `ty`.)
-    pub fn type_needs_drop_given_env(self,
-                                     ty: Ty<'gcx>,
-                                     param_env: &ty::ParameterEnvironment<'gcx>) -> bool {
-        // Issue #22536: We first query type_moves_by_default.  It sees a
-        // normalized version of the type, and therefore will definitely
-        // know whether the type implements Copy (and thus needs no
-        // cleanup/drop/zeroing) ...
-        let tcx = self.global_tcx();
-        let implements_copy = !ty.moves_by_default(tcx, param_env, DUMMY_SP);
-
-        if implements_copy { return false; }
-
-        // ... (issue #22536 continued) but as an optimization, still use
-        // prior logic of asking if the `needs_drop` bit is set; we need
-        // not zero non-Copy types if they have no destructor.
-
-        // FIXME(#22815): Note that calling `ty::type_contents` is a
-        // conservative heuristic; it may report that `needs_drop` is set
-        // when actual type does not actually have a destructor associated
-        // with it. But since `ty` absolutely did not have the `Copy`
-        // bound attached (see above), it is sound to treat it as having a
-        // destructor (e.g. zero its memory on move).
-
-        let contents = ty.type_contents(tcx);
-        debug!("type_needs_drop ty={:?} contents={:?}", ty, contents);
-        contents.needs_drop(tcx)
-    }
-
     /// Get the attributes of a definition.
-    pub fn get_attrs(self, did: DefId) -> Cow<'gcx, [ast::Attribute]> {
+    pub fn get_attrs(self, did: DefId) -> Attributes<'gcx> {
         if let Some(id) = self.hir.as_local_node_id(did) {
-            Cow::Borrowed(self.hir.attrs(id))
+            Attributes::Borrowed(self.hir.attrs(id))
         } else {
-            Cow::Owned(self.sess.cstore.item_attrs(did))
+            Attributes::Owned(self.sess.cstore.item_attrs(did))
         }
     }
 
@@ -2520,17 +2508,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// Construct a parameter environment suitable for static contexts or other contexts where there
     /// are no free type/lifetime parameters in scope.
     pub fn empty_parameter_environment(self) -> ParameterEnvironment<'tcx> {
-
-        // for an empty parameter environment, there ARE no free
-        // regions, so it shouldn't matter what we use for the free id
-        let free_id_outlive = self.region_maps.node_extent(ast::DUMMY_NODE_ID);
         ty::ParameterEnvironment {
             free_substs: self.intern_substs(&[]),
             caller_bounds: Vec::new(),
-            implicit_region_bound: self.mk_region(ty::ReEmpty),
-            free_id_outlive: free_id_outlive,
+            implicit_region_bound: self.types.re_empty,
+            // for an empty parameter environment, there ARE no free
+            // regions, so it shouldn't matter what we use for the free id
+            free_id_outlive: ROOT_CODE_EXTENT,
             is_copy_cache: RefCell::new(FxHashMap()),
             is_sized_cache: RefCell::new(FxHashMap()),
+            is_freeze_cache: RefCell::new(FxHashMap()),
         }
     }
 
@@ -2603,6 +2590,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             free_id_outlive: free_id_outlive,
             is_copy_cache: RefCell::new(FxHashMap()),
             is_sized_cache: RefCell::new(FxHashMap()),
+            is_freeze_cache: RefCell::new(FxHashMap()),
         };
 
         let cause = traits::ObligationCause::misc(span, free_id_outlive.node_id(&self.region_maps));
@@ -2779,4 +2767,3 @@ pub fn provide_extern(providers: &mut ty::maps::Providers) {
 pub struct CrateInherentImpls {
     pub inherent_impls: DefIdMap<Rc<Vec<DefId>>>,
 }
-

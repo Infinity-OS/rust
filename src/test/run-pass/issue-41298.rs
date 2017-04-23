@@ -8,11 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-struct ListNode { //~ ERROR E0072
-                  //~| NOTE recursive type has infinite size
-    head: u8,
-    tail: Option<ListNode>,
-}
+struct Function<T, F> { t: T, f: F }
 
-fn main() {
-}
+impl<T, R> Function<T, fn() -> R> { fn foo() { } }
+impl<T, R> Function<T, fn() -> R> { fn bar() { } }
+
+fn main() { }

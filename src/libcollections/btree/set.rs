@@ -97,7 +97,7 @@ impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
 
 /// An owning iterator over the items of a `BTreeSet`.
 ///
-/// This `struct` is created by the [`into_iter`] method on [`BTreeSet`]
+/// This `struct` is created by the [`into_iter`] method on [`BTreeSet`][`BTreeSet`]
 /// (provided by the `IntoIterator` trait). See its documentation for more.
 ///
 /// [`BTreeSet`]: struct.BTreeSet.html
@@ -138,7 +138,8 @@ pub struct Difference<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Difference<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("Difference")
-         .field(&self.clone())
+         .field(&self.a)
+         .field(&self.b)
          .finish()
     }
 }
@@ -160,7 +161,8 @@ pub struct SymmetricDifference<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for SymmetricDifference<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("SymmetricDifference")
-         .field(&self.clone())
+         .field(&self.a)
+         .field(&self.b)
          .finish()
     }
 }
@@ -182,7 +184,8 @@ pub struct Intersection<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Intersection<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("Intersection")
-         .field(&self.clone())
+         .field(&self.a)
+         .field(&self.b)
          .finish()
     }
 }
@@ -204,7 +207,8 @@ pub struct Union<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Union<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("Union")
-         .field(&self.clone())
+         .field(&self.a)
+         .field(&self.b)
          .finish()
     }
 }
@@ -941,11 +945,14 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<T> FusedIterator for IntoIter<T> {}
 
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, T> Clone for Range<'a, T> {
     fn clone(&self) -> Range<'a, T> {
         Range { iter: self.iter.clone() }
     }
 }
+
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, T> Iterator for Range<'a, T> {
     type Item = &'a T;
 
@@ -953,6 +960,8 @@ impl<'a, T> Iterator for Range<'a, T> {
         self.iter.next().map(|(k, _)| k)
     }
 }
+
+#[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, T> DoubleEndedIterator for Range<'a, T> {
     fn next_back(&mut self) -> Option<&'a T> {
         self.iter.next_back().map(|(k, _)| k)

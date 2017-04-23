@@ -8,13 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![crate_name = "foo"]
+// It should just use the entire body instead of pointing at the next two lines
+struct
+ListNode
+{
+    head: u8,
+    tail: Option<ListNode>,
+}
 
-// ignore-tidy-end-whitespace
-
-// @has foo/fn.f.html
-// @has - '<p>hard break:<br />'
-// @has - 'after hard break</p>'
-/// hard break:  
-/// after hard break
-pub fn f() {}
+fn main() {
+}

@@ -128,7 +128,6 @@ use rustc_back::slice;
 use rustc::middle::const_val::eval_length;
 use rustc_const_math::ConstInt;
 
-mod assoc;
 mod autoderef;
 pub mod dropck;
 pub mod _match;
@@ -536,7 +535,7 @@ impl<'a, 'gcx, 'tcx> InheritedBuilder<'a, 'gcx, 'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> Inherited<'a, 'gcx, 'tcx> {
-    pub fn new(infcx: InferCtxt<'a, 'gcx, 'tcx>) -> Self {
+    fn new(infcx: InferCtxt<'a, 'gcx, 'tcx>) -> Self {
         Inherited {
             infcx: infcx,
             fulfillment_cx: RefCell::new(traits::FulfillmentContext::new()),
@@ -547,20 +546,55 @@ impl<'a, 'gcx, 'tcx> Inherited<'a, 'gcx, 'tcx> {
         }
     }
 
+    fn register_predicate(&self, obligation: traits::PredicateObligation<'tcx>) {
+        debug!("register_predicate({:?})", obligation);
+        if obligation.has_escaping_regions() {
+            span_bug!(obligation.cause.span, "escaping regions in predicate {:?}",
+                      obligation);
+        }
+        self.fulfillment_cx
+            .borrow_mut()
+            .register_predicate_obligation(self, obligation);
+    }
+
+    fn register_predicates(&self, obligations: Vec<traits::PredicateObligation<'tcx>>) {
+        for obligation in obligations {
+            self.register_predicate(obligation);
+        }
+    }
+
+    fn register_infer_ok_obligations<T>(&self, infer_ok: InferOk<'tcx, T>) -> T {
+        self.register_predicates(infer_ok.obligations);
+        infer_ok.value
+    }
+
     fn normalize_associated_types_in<T>(&self,
                                         span: Span,
                                         body_id: ast::NodeId,
-                                        value: &T)
-                                        -> T
+                                        value: &T) -> T
         where T : TypeFoldable<'tcx>
     {
-        assoc::normalize_associated_types_in(self,
-                                             &mut self.fulfillment_cx.borrow_mut(),
-                                             span,
-                                             body_id,
-                                             value)
+        let ok = self.normalize_associated_types_in_as_infer_ok(span, body_id, value);
+        self.register_infer_ok_obligations(ok)
     }
 
+    fn normalize_associated_types_in_as_infer_ok<T>(&self,
+                                                    span: Span,
+                                                    body_id: ast::NodeId,
+                                                    value: &T)
+                                                    -> InferOk<'tcx, T>
+        where T : TypeFoldable<'tcx>
+    {
+        debug!("normalize_associated_types_in(value={:?})", value);
+        let mut selcx = traits::SelectionContext::new(self);
+        let cause = ObligationCause::misc(span, body_id);
+        let traits::Normalized { value, obligations } =
+            traits::normalize(&mut selcx, cause, value);
+        debug!("normalize_associated_types_in: result={:?} predicates={:?}",
+            value,
+            obligations);
+        InferOk { value, obligations }
+    }
 }
 
 struct CheckItemTypesVisitor<'a, 'tcx: 'a> { tcx: TyCtxt<'a, 'tcx, 'tcx> }
@@ -918,6 +952,12 @@ fn check_struct<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
     if def.repr.simd() {
         check_simd(tcx, span, def_id);
+    }
+
+    // if struct is packed and not aligned, check fields for alignment.
+    // Checks for combining packed and align attrs on single struct are done elsewhere.
+    if tcx.lookup_adt_def(def_id).repr.packed() && tcx.lookup_adt_def(def_id).repr.align == 0 {
+        check_packed(tcx, span, def_id);
     }
 }
 
@@ -1337,6 +1377,47 @@ pub fn check_simd<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, sp: Span, def_id: DefId
     }
 }
 
+fn check_packed<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, sp: Span, def_id: DefId) {
+    if check_packed_inner(tcx, def_id, &mut Vec::new()) {
+        struct_span_err!(tcx.sess, sp, E0588,
+            "packed struct cannot transitively contain a `[repr(align)]` struct").emit();
+    }
+}
+
+fn check_packed_inner<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                                def_id: DefId,
+                                stack: &mut Vec<DefId>) -> bool {
+    let t = tcx.item_type(def_id);
+    if stack.contains(&def_id) {
+        debug!("check_packed_inner: {:?} is recursive", t);
+        return false;
+    }
+    match t.sty {
+        ty::TyAdt(def, substs) if def.is_struct() => {
+            if tcx.lookup_adt_def(def.did).repr.align > 0 {
+                return true;
+            }
+            // push struct def_id before checking fields
+            stack.push(def_id);
+            for field in &def.struct_variant().fields {
+                let f = field.ty(tcx, substs);
+                match f.sty {
+                    ty::TyAdt(def, _) => {
+                        if check_packed_inner(tcx, def.did, stack) {
+                            return true;
+                        }
+                    }
+                    _ => ()
+                }
+            }
+            // only need to pop if not early out
+            stack.pop();
+        }
+        _ => ()
+    }
+    false
+}
+
 #[allow(trivial_numeric_casts)]
 pub fn check_enum<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                             sp: Span,
@@ -1713,14 +1794,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                           -> ty::InstantiatedPredicates<'tcx> {
         let bounds = self.tcx.item_predicates(def_id);
         let result = bounds.instantiate(self.tcx, substs);
-        let result = self.normalize_associated_types_in(span, &result.predicates);
+        let result = self.normalize_associated_types_in(span, &result);
         debug!("instantiate_bounds(bounds={:?}, substs={:?}) = {:?}",
                bounds,
                substs,
                result);
-        ty::InstantiatedPredicates {
-            predicates: result
-        }
+        result
     }
 
     /// Replace all anonymized types with fresh inference variables
@@ -1763,7 +1842,15 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     fn normalize_associated_types_in<T>(&self, span: Span, value: &T) -> T
         where T : TypeFoldable<'tcx>
     {
-        self.inh.normalize_associated_types_in(span, self.body_id, value)
+        let ok = self.normalize_associated_types_in_as_infer_ok(span, value);
+        self.register_infer_ok_obligations(ok)
+    }
+
+    fn normalize_associated_types_in_as_infer_ok<T>(&self, span: Span, value: &T)
+                                                    -> InferOk<'tcx, T>
+        where T : TypeFoldable<'tcx>
+    {
+        self.inh.normalize_associated_types_in_as_infer_ok(span, self.body_id, value)
     }
 
     pub fn write_nil(&self, node_id: ast::NodeId) {
@@ -1802,32 +1889,6 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     {
         self.fulfillment_cx.borrow_mut()
             .register_bound(self, ty, def_id, cause);
-    }
-
-    pub fn register_predicate(&self,
-                              obligation: traits::PredicateObligation<'tcx>)
-    {
-        debug!("register_predicate({:?})", obligation);
-        if obligation.has_escaping_regions() {
-            span_bug!(obligation.cause.span, "escaping regions in predicate {:?}",
-                      obligation);
-        }
-        self.fulfillment_cx
-            .borrow_mut()
-            .register_predicate_obligation(self, obligation);
-    }
-
-    pub fn register_predicates(&self,
-                               obligations: Vec<traits::PredicateObligation<'tcx>>)
-    {
-        for obligation in obligations {
-            self.register_predicate(obligation);
-        }
-    }
-
-    pub fn register_infer_ok_obligations<T>(&self, infer_ok: InferOk<'tcx, T>) -> T {
-        self.register_predicates(infer_ok.obligations);
-        infer_ok.value
     }
 
     pub fn to_ty(&self, ast_t: &hir::Ty) -> Ty<'tcx> {
@@ -1893,7 +1954,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         //
         // FIXME(#27579) all uses of this should be migrated to register_wf_obligation eventually
         let cause = traits::ObligationCause::new(span, self.body_id, code);
-        self.register_region_obligation(ty, self.tcx.mk_region(ty::ReEmpty), cause);
+        self.register_region_obligation(ty, self.tcx.types.re_empty, cause);
     }
 
     /// Registers obligations that all types appearing in `substs` are well-formed.
@@ -2072,12 +2133,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 expr, base_expr, adj_ty, autoderefs,
                 false, lvalue_pref, idx_ty)
             {
-                autoderef.finalize(lvalue_pref, &[base_expr]);
+                autoderef.finalize(lvalue_pref, base_expr);
                 return Some(final_mt);
             }
 
             if let ty::TyArray(element_ty, _) = adj_ty.sty {
-                autoderef.finalize(lvalue_pref, &[base_expr]);
+                autoderef.finalize(lvalue_pref, base_expr);
                 let adjusted_ty = self.tcx.mk_slice(element_ty);
                 return self.try_index_step(
                     MethodCall::expr(expr.id), expr, base_expr,
@@ -2161,8 +2222,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // If some lookup succeeds, write callee into table and extract index/element
         // type from the method signature.
         // If some lookup succeeded, install method in table
-        method.map(|method| {
+        method.map(|ok| {
             debug!("try_index_step: success, using overloaded indexing");
+            let method = self.register_infer_ok_obligations(ok);
             self.tables.borrow_mut().method_map.insert(method_call, method);
             (input_ty, self.make_overloaded_lvalue_return_type(method).ty)
         })
@@ -2451,7 +2513,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         match lit.node {
             ast::LitKind::Str(..) => tcx.mk_static_str(),
             ast::LitKind::ByteStr(ref v) => {
-                tcx.mk_imm_ref(tcx.mk_region(ty::ReStatic),
+                tcx.mk_imm_ref(tcx.types.re_static,
                                 tcx.mk_array(tcx.types.u8, v.len()))
             }
             ast::LitKind::Byte(_) => tcx.types.u8,
@@ -2586,7 +2648,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         // we can.  We don't care if some things turn
                         // out unconstrained or ambiguous, as we're
                         // just trying to get hints here.
-                        let result = self.save_and_restore_obligations_in_snapshot_flag(|_| {
+                        let result = self.save_and_restore_in_snapshot_flag(|_| {
                             let mut fulfill = FulfillmentContext::new();
                             let ok = ok; // FIXME(#30046)
                             for obligation in ok.obligations {
@@ -2755,7 +2817,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     if let Some(field) = base_def.struct_variant().find_field_named(field.node) {
                         let field_ty = self.field_ty(expr.span, field, substs);
                         if self.tcx.vis_is_accessible_from(field.vis, self.body_id) {
-                            autoderef.finalize(lvalue_pref, &[base]);
+                            autoderef.finalize(lvalue_pref, base);
                             self.apply_autoderef_adjustment(base.id, autoderefs, base_t);
 
                             self.tcx.check_stability(field.did, expr.id, expr.span);
@@ -2879,7 +2941,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             };
 
             if let Some(field_ty) = field {
-                autoderef.finalize(lvalue_pref, &[base]);
+                autoderef.finalize(lvalue_pref, base);
                 self.apply_autoderef_adjustment(base.id, autoderefs, base_t);
                 return field_ty;
             }
@@ -3292,8 +3354,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
                         if let Some(mt) = oprnd_t.builtin_deref(true, NoPreference) {
                             oprnd_t = mt.ty;
-                        } else if let Some(method) = self.try_overloaded_deref(
+                        } else if let Some(ok) = self.try_overloaded_deref(
                                 expr.span, Some(&oprnd), oprnd_t, lvalue_pref) {
+                            let method = self.register_infer_ok_obligations(ok);
                             oprnd_t = self.make_overloaded_lvalue_return_type(method).ty;
                             self.tables.borrow_mut().method_map.insert(MethodCall::expr(expr.id),
                                                                            method);

@@ -1913,7 +1913,9 @@ pub struct Iter<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("Iter")
-         .field(&self.clone())
+         .field(&self.ring)
+         .field(&self.tail)
+         .field(&self.head)
          .finish()
     }
 }
@@ -2000,7 +2002,9 @@ pub struct IterMut<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for IterMut<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("IterMut")
-         .field(&self.clone())
+         .field(&self.ring)
+         .field(&self.tail)
+         .field(&self.head)
          .finish()
     }
 }
@@ -2066,7 +2070,7 @@ impl<'a, T> FusedIterator for IterMut<'a, T> {}
 
 /// An owning iterator over the elements of a `VecDeque`.
 ///
-/// This `struct` is created by the [`into_iter`] method on [`VecDeque`]
+/// This `struct` is created by the [`into_iter`] method on [`VecDeque`][`VecDeque`]
 /// (provided by the `IntoIterator` trait). See its documentation for more.
 ///
 /// [`into_iter`]: struct.VecDeque.html#method.into_iter
@@ -2081,7 +2085,7 @@ pub struct IntoIter<T> {
 impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("IntoIter")
-         .field(&self.clone())
+         .field(&self.inner)
          .finish()
     }
 }
@@ -2139,7 +2143,9 @@ pub struct Drain<'a, T: 'a> {
 impl<'a, T: 'a + fmt::Debug> fmt::Debug for Drain<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("Drain")
-         .field(&self.clone())
+         .field(&self.after_tail)
+         .field(&self.after_head)
+         .field(&self.iter)
          .finish()
     }
 }
@@ -2272,7 +2278,7 @@ macro_rules! __impl_slice_eq1 {
         __impl_slice_eq1! { $Lhs, $Rhs, Sized }
     };
     ($Lhs: ty, $Rhs: ty, $Bound: ident) => {
-        #[stable(feature = "vec-deque-partial-eq-slice", since = "1.16.0")]
+        #[stable(feature = "vec-deque-partial-eq-slice", since = "1.17.0")]
         impl<'a, 'b, A: $Bound, B> PartialEq<$Rhs> for $Lhs where A: PartialEq<B> {
             fn eq(&self, other: &$Rhs) -> bool {
                 if self.len() != other.len() {
